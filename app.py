@@ -1,56 +1,158 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
+import requests
+import folium
+import os
+from dotenv import load_dotenv
+from streamlit_folium import st_folium
+from geopy.geocoders import Nominatim
+from geopy.distance import geodesic
+
+load_dotenv()
 
 # 페이지 기본 설정
 st.set_page_config(page_title="주차장 추천 서비스", layout="wide")
 
-st.title("🚗 맞춤형 주차장 추천 서비스 (프로토타입)")
-st.markdown("운전자의 우선순위(가격, 거리, 잔여 공간)에 따라 최적의 주차장을 추천해주는 데모입니다.")
+st.title("🚗 맞춤형 주차장 추천 서비스 (실시간 API 연동)")
+st.markdown("서울시 실시간 공영주차장 API를 활용하여 우선순위에 따른 최적의 주차장을 추천합니다.")
 
-# --- 1. 사용자 입력 (가중치 설정) ---
-st.sidebar.header("🤔 주차 시 무엇이 가장 걱정되시나요?")
-st.sidebar.markdown("1~5점으로 중요도를 설정해주세요.")
+SEOUL_API_KEY = os.environ.get("SEOUL_API_KEY", "")
+
+@st.cache_data(ttl=300) # 5분마다 API 재호출
+def load_realtime_parking_data():
+    url = f"http://openapi.seoul.go.kr:8088/{SEOUL_API_KEY}/json/GetParkingInfo/1/200/"
+    try:
+        res = requests.get(url)
+        data = res.json()
+        rows = data['GetParkingInfo']['row']
+        df = pd.DataFrame(rows)
+        # 필요한 컬럼만 추출
+        df = df[['PKLT_NM', 'ADDR', 'TPKCT', 'NOW_PRK_VHCL_CNT', 'BSC_PRK_CRG']]
+        df.columns = ['주차장명', '주소', '총면수', '현재주차대수', '기본요금']
+        
+        # 숫자형 데이터 변환
+        for col in ['총면수', '현재주차대수', '기본요금']:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+            
+        # 잔여면수 계산 (총면수 - 현재주차대수)
+        df['잔여면수'] = df['총면수'] - df['현재주차대수']
+        df.loc[df['잔여면수'] < 0, '잔여면수'] = 0
+        df['잔여비율(%)'] = (df['잔여면수'] / df['총면수']) * 100
+        df['잔여비율(%)'] = df['잔여비율(%)'].fillna(0)
+        
+        return df
+    except Exception as e:
+        st.error(f"API 호출 실패: {e}")
+        return pd.DataFrame()
+
+# 지오코딩 (주소 -> 위도/경도) 함수
+@st.cache_data
+def get_lat_lng(address):
+    geolocator = Nominatim(user_agent="parking_app")
+    try:
+        # 지오코딩 정확도를 위해 '구'까지만 잘라서 검색하는 꼼수
+        short_addr = " ".join(address.split()[:3]) 
+        location = geolocator.geocode(short_addr)
+        if location:
+            return location.latitude, location.longitude
+        return None, None
+    except:
+        return None, None
+
+df_all = load_realtime_parking_data()
+
+# --- 사용자 입력 ---
+st.sidebar.header("🎯 목적지 및 우선순위 설정")
+# API 데이터 124개 중 필터링을 위해 구 이름을 입력받음
+destination = st.sidebar.text_input("목적지 검색 (예: 종로구, 중구, 강남구)", value="종로구")
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("**1~5점으로 중요도를 설정해주세요.**")
 weight_price = st.sidebar.slider("💰 저렴한 요금", 1, 5, 3)
-weight_dist = st.sidebar.slider("📍 목적지와의 가까운 거리", 1, 5, 3)
-weight_space = st.sidebar.slider("🅿️ 넉넉한 주차 공간", 1, 5, 3)
+weight_dist = st.sidebar.slider("📍 가까운 거리", 1, 5, 4)
+weight_space = st.sidebar.slider("🅿️ 넉넉한 공간", 1, 5, 3)
 
-# --- 2. 가상(Dummy) 주차장 데이터 ---
-# (실제 서비스에서는 이 부분을 서울시 API 실시간 데이터로 교체합니다)
-data = {
-    '주차장명': ['A 공영주차장', 'B 민영주차장', 'C 빌딩주차장', 'D 환승주차장', 'E 쇼핑몰주차장'],
-    '요금(1시간)': [2400, 6000, 5000, 1200, 8000],
-    '목적지거리(m)': [800, 100, 500, 1200, 200],
-    '총면수': [100, 50, 200, 300, 500],
-    '잔여면수': [5, 20, 150, 10, 400]
-}
-df = pd.DataFrame(data)
-df['잔여비율(%)'] = (df['잔여면수'] / df['총면수']) * 100
+if not df_all.empty and destination:
+    # 해당 목적지(구 단위)가 포함된 주차장만 필터링
+    df_filtered = df_all[df_all['주소'].str.contains(destination)].copy()
+    
+    if df_filtered.empty:
+        st.warning(f"'{destination}'에 해당하는 실시간 공영주차장 데이터가 없습니다. (종로구, 중구, 영등포구 등을 검색해보세요)")
+    else:
+        st.success(f"'{destination}' 주변 {len(df_filtered)}개의 실시간 주차장 정보를 분석합니다!")
+        
+        # 목적지 좌표 가져오기
+        dest_lat, dest_lng = get_lat_lng(f"서울 {destination}")
+        if dest_lat is None:
+            dest_lat, dest_lng = 37.5700, 126.9796 # 종로구 기본값
+            
+        with st.spinner("지도를 불러오는 중입니다..."):
+            # 각 주차장 거리 계산
+            distances, lats, lngs = [], [], []
+            for idx, row in df_filtered.iterrows():
+                lat, lng = get_lat_lng(row['주소'])
+                if lat and lng:
+                    dist = geodesic((dest_lat, dest_lng), (lat, lng)).meters
+                else:
+                    # 좌표를 못 찾으면 임의의 근처 좌표 부여 (데모용)
+                    lat, lng = dest_lat + 0.005, dest_lng + 0.005 
+                    dist = 9999
+                lats.append(lat)
+                lngs.append(lng)
+                distances.append(dist)
+                
+            df_filtered['위도'] = lats
+            df_filtered['경도'] = lngs
+            df_filtered['거리(m)'] = distances
 
-# --- 3. 추천 알고리즘 계산 ---
-# 각 항목을 0~1 사이로 정규화 (Min-Max Scaling)
-# 요금과 거리는 낮을수록 좋으므로 1에서 빼줍니다.
-norm_price = 1 - (df['요금(1시간)'] - df['요금(1시간)'].min()) / (df['요금(1시간)'].max() - df['요금(1시간)'].min())
-norm_dist = 1 - (df['목적지거리(m)'] - df['목적지거리(m)'].min()) / (df['목적지거리(m)'].max() - df['목적지거리(m)'].min())
-norm_space = (df['잔여비율(%)'] - df['잔여비율(%)'].min()) / (df['잔여비율(%)'].max() - df['잔여비율(%)'].min())
+        # --- 알고리즘 계산 ---
+        # Min-Max Scaling (가장 싼 곳 1점, 가장 비싼 곳 0점)
+        if df_filtered['기본요금'].max() != df_filtered['기본요금'].min():
+            norm_price = 1 - (df_filtered['기본요금'] - df_filtered['기본요금'].min()) / (df_filtered['기본요금'].max() - df_filtered['기본요금'].min())
+        else: norm_price = 1
 
-# 사용자가 설정한 가중치를 곱하여 최종 점수 산출
-df['추천점수(Score)'] = (weight_price * norm_price) + (weight_dist * norm_dist) + (weight_space * norm_space)
+        if df_filtered['거리(m)'].max() != df_filtered['거리(m)'].min():
+            norm_dist = 1 - (df_filtered['거리(m)'] - df_filtered['거리(m)'].min()) / (df_filtered['거리(m)'].max() - df_filtered['거리(m)'].min())
+        else: norm_dist = 1
+        
+        if df_filtered['잔여비율(%)'].max() != df_filtered['잔여비율(%)'].min():
+            norm_space = (df_filtered['잔여비율(%)'] - df_filtered['잔여비율(%)'].min()) / (df_filtered['잔여비율(%)'].max() - df_filtered['잔여비율(%)'].min())
+        else: norm_space = 1
 
-# 점수 높은 순으로 정렬
-df = df.sort_values(by='추천점수(Score)', ascending=False).reset_index(drop=True)
+        df_filtered['추천점수(Score)'] = (weight_price * norm_price) + (weight_dist * norm_dist) + (weight_space * norm_space)
+        df_filtered = df_filtered.sort_values(by='추천점수(Score)', ascending=False).reset_index(drop=True)
 
-# --- 4. 결과 출력 ---
-st.subheader("🏆 추천 주차장 Top 3")
+        # --- 시각화 (Folium Map) ---
+        col1, col2 = st.columns([1, 1])
+        
+        with col1:
+            st.subheader("🏆 실시간 추천 주차장 Top 3")
+            display_df = df_filtered[['주차장명', '기본요금', '거리(m)', '잔여면수', '추천점수(Score)']].head(3).copy()
+            display_df['추천점수(Score)'] = display_df['추천점수(Score)'].round(2)
+            display_df['거리(m)'] = display_df['거리(m)'].round(0)
+            st.dataframe(display_df, width='stretch')
+            st.info("💡 사이드바의 중요도를 변경하면 1위가 즉시 바뀝니다!")
 
-# 결과를 보기 좋게 포맷팅
-display_df = df[['주차장명', '요금(1시간)', '목적지거리(m)', '잔여면수', '총면수', '추천점수(Score)']].head(3).copy()
-display_df['추천점수(Score)'] = display_df['추천점수(Score)'].round(2)
-
-st.dataframe(display_df, width='stretch')
-
-st.info("💡 팁: 좌측 사이드바에서 우선순위 슬라이더를 움직여보세요. 유저의 상황에 따라 1위 주차장이 실시간으로 바뀝니다!")
-
-st.markdown("---")
-st.markdown("### 📊 전체 주차장 현황 (참고용)")
-st.dataframe(df[['주차장명', '요금(1시간)', '목적지거리(m)', '잔여면수', '총면수', '잔여비율(%)']].round(1), width='stretch')
+        with col2:
+            st.subheader("🗺️ 추천 위치 (지도)")
+            m = folium.Map(location=[dest_lat, dest_lng], zoom_start=14)
+            
+            # 목적지
+            folium.Marker([dest_lat, dest_lng], tooltip="목적지", icon=folium.Icon(color="red", icon="star")).add_to(m)
+            
+            # 추천 Top 3 마커 
+            colors = ["orange", "green", "blue"]
+            for i, row in df_filtered.head(3).iterrows():
+                rank = i + 1
+                folium.Marker(
+                    [row['위도'], row['경도']],
+                    popup=f"[{rank}위] {row['주차장명']}<br>잔여: {int(row['잔여면수'])}대",
+                    tooltip=f"{rank}위 추천!",
+                    icon=folium.Icon(color=colors[i], icon="info-sign")
+                ).add_to(m)
+                
+            st_folium(m, width=700, height=400)
+            
+        st.markdown("---")
+        st.markdown("### 📊 주변 주차장 실시간 현황")
+        st.dataframe(df_filtered[['주차장명', '주소', '기본요금', '거리(m)', '잔여면수', '총면수', '잔여비율(%)']].round(1), width='stretch')
