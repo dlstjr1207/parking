@@ -123,36 +123,131 @@ if not df_all.empty and destination:
         df_filtered['추천점수(Score)'] = (weight_price * norm_price) + (weight_dist * norm_dist) + (weight_space * norm_space)
         df_filtered = df_filtered.sort_values(by='추천점수(Score)', ascending=False).reset_index(drop=True)
 
-        # --- 시각화 (Folium Map) ---
-        col1, col2 = st.columns([1, 1])
-        
-        with col1:
-            st.subheader("🏆 실시간 추천 주차장 Top 3")
-            display_df = df_filtered[['주차장명', '기본요금', '거리(m)', '잔여면수', '추천점수(Score)']].head(3).copy()
-            display_df['추천점수(Score)'] = display_df['추천점수(Score)'].round(2)
-            display_df['거리(m)'] = display_df['거리(m)'].round(0)
-            st.dataframe(display_df, width='stretch')
-            st.info("💡 사이드바의 중요도를 변경하면 1위가 즉시 바뀝니다!")
+        # --- 시각화 (Folium Map & Custom Cards) ---
+        # CSS 주입
+        st.markdown("""
+        <style>
+        .parking-card {
+            background-color: #ffffff;
+            border-radius: 16px;
+            padding: 20px;
+            margin-bottom: 15px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+            border: 1px solid #f0f0f0;
+        }
+        .badge-best {
+            background-color: #e8f3ff;
+            color: #0066ff;
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 700;
+            display: inline-block;
+            margin-bottom: 12px;
+        }
+        .park-title {
+            font-size: 20px;
+            font-weight: 800;
+            color: #111;
+            margin: 0 0 5px 0;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .park-desc {
+            font-size: 14px;
+            color: #888;
+            margin: 0 0 15px 0;
+        }
+        .info-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+            padding-top: 10px;
+            border-top: 1px solid #f5f5f5;
+        }
+        .price-text {
+            font-size: 18px;
+            font-weight: 800;
+            color: #111;
+        }
+        .space-text {
+            font-size: 14px;
+            color: #ff4757;
+            font-weight: bold;
+        }
+        .space-good {
+            color: #2ed573;
+            font-weight: bold;
+            font-size: 14px;
+        }
+        .btn-nav {
+            background-color: #0066ff;
+            color: white !important;
+            border: none;
+            border-radius: 10px;
+            padding: 14px;
+            text-align: center;
+            font-weight: bold;
+            display: block;
+            text-decoration: none;
+            transition: 0.2s;
+        }
+        .btn-nav:hover {
+            background-color: #0052cc;
+            color: white !important;
+        }
+        </style>
+        """, unsafe_allow_html=True)
 
-        with col2:
-            st.subheader("🗺️ 추천 위치 (지도)")
-            m = folium.Map(location=[dest_lat, dest_lng], zoom_start=14)
+        st.subheader("🗺️ 실시간 추천 위치 (지도)")
+        m = folium.Map(location=[dest_lat, dest_lng], zoom_start=14)
+        
+        # 목적지
+        folium.Marker([dest_lat, dest_lng], tooltip="목적지", icon=folium.Icon(color="red", icon="star")).add_to(m)
+        
+        # 추천 Top 3 마커 
+        colors = ["red", "orange", "green"]
+        for i, row in df_filtered.head(3).iterrows():
+            rank = i + 1
+            folium.Marker(
+                [row['위도'], row['경도']],
+                popup=f"[{rank}위] {row['주차장명']}<br>잔여: {int(row['잔여면수'])}대",
+                tooltip=f"{rank}위 추천!",
+                icon=folium.Icon(color=colors[i], icon="info-sign")
+            ).add_to(m)
             
-            # 목적지
-            folium.Marker([dest_lat, dest_lng], tooltip="목적지", icon=folium.Icon(color="red", icon="star")).add_to(m)
+        # 지도 너비 확장
+        st_folium(m, width=1200, height=450)
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.subheader("🏆 ParkWise 최적 추천 Top 3")
+        
+        # 3개의 카드를 나란히 배치
+        cols = st.columns(3)
+        for i, (idx, row) in enumerate(df_filtered.head(3).iterrows()):
+            rank = i + 1
+            dist_m = int(row['거리(m)'])
+            space = int(row['잔여면수'])
+            space_class = "space-good" if space >= 5 else "space-text"
+            price = f"{int(row['기본요금']):,}원" if row['기본요금'] > 0 else "무료"
             
-            # 추천 Top 3 마커 
-            colors = ["orange", "green", "blue"]
-            for i, row in df_filtered.head(3).iterrows():
-                rank = i + 1
-                folium.Marker(
-                    [row['위도'], row['경도']],
-                    popup=f"[{rank}위] {row['주차장명']}<br>잔여: {int(row['잔여면수'])}대",
-                    tooltip=f"{rank}위 추천!",
-                    icon=folium.Icon(color=colors[i], icon="info-sign")
-                ).add_to(m)
-                
-            st_folium(m, width=700, height=400)
+            card_html = f"""
+<div class="parking-card">
+<div class="badge-best">A{rank} 최적 추천</div>
+<div class="park-title" title="{row['주차장명']}">{row['주차장명']}</div>
+<div class="park-desc">🚶 {destination} 기준 도보 약 {dist_m//80}분 ({dist_m}m)</div>
+<div class="info-row">
+<span class="price-text">{price} <span style="font-size:12px; color:#888; font-weight:normal;">/기본</span></span>
+<span class="{space_class}">여유 {space}대</span>
+</div>
+<a href="https://map.kakao.com/link/to/{row['주차장명']},{row['위도']},{row['경도']}" target="_blank" class="btn-nav">
+▲ 카카오맵 안내 시작
+</a>
+</div>
+"""
+            cols[i].markdown(card_html, unsafe_allow_html=True)
             
         st.markdown("---")
         st.markdown("### 📊 주변 주차장 실시간 현황")
