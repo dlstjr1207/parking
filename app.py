@@ -63,8 +63,9 @@ df_all = load_realtime_parking_data()
 
 # --- 사용자 입력 ---
 st.sidebar.header("🎯 목적지 및 우선순위 설정")
-# API 데이터 124개 중 필터링을 위해 구 이름을 입력받음
-destination = st.sidebar.text_input("목적지 검색 (예: 종로구, 중구, 강남구)", value="종로구")
+# API 데이터 124개 중 필터링을 위해 구 이름을 선택받음
+gu_list = ["강남구", "강동구", "강북구", "강서구", "관악구", "광진구", "구로구", "금천구", "노원구", "도봉구", "동대문구", "동작구", "마포구", "서대문구", "서초구", "성동구", "성북구", "송파구", "양천구", "영등포구", "용산구", "은평구", "종로구", "중구", "중랑구"]
+destination = st.sidebar.selectbox("목적지 선택", gu_list, index=gu_list.index("종로구"))
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("**1~5점으로 중요도를 설정해주세요.**")
