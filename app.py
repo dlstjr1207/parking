@@ -16,7 +16,12 @@ st.set_page_config(page_title="주차장 추천 서비스", layout="wide")
 st.title("🚗 맞춤형 주차장 추천 서비스 (실시간 API 연동)")
 st.markdown("서울시 실시간 공영주차장 API를 활용하여 우선순위에 따른 최적의 주차장을 추천합니다.")
 
-SEOUL_API_KEY = os.environ.get("SEOUL_API_KEY", "")
+try:
+    # Streamlit Cloud 환경용 (Secrets)
+    SEOUL_API_KEY = st.secrets["SEOUL_API_KEY"]
+except:
+    # 로컬 환경용 (.env 파일)
+    SEOUL_API_KEY = os.environ.get("SEOUL_API_KEY", "")
 
 @st.cache_data(ttl=300) # 5분마다 API 재호출
 def load_realtime_parking_data():
